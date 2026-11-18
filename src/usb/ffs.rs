@@ -13,6 +13,7 @@ use super::types::{
 pub trait Ep0Handler {
     /// Return true if the request was handled, false to stall the endpoint
     fn handle_control_request(&mut self, req: &UsbCtrlRequest, ep0: &mut File) -> Result<bool>;
+    fn handle_setup(&self, ep0: &mut std::fs::File, bm_req: u8, b_req: u8, w_value: u16, w_length: u16);
 }
 
 /// Writes the raw descriptors to EP0 to trigger the kernel to create EP1
@@ -61,24 +62,40 @@ pub fn write_descriptors(ep0: &mut File, descriptors: &[u8], descriptor_count: u
 }
 
 /// The generic FunctionFS EP0 event loop
-pub fn run_ep0_loop(mut ep0: File, mut handler: impl Ep0Handler) {
-    let mut event_buf = [0u8; 128];
+pub fn run_ep0_loop(mut ep0: File, mut handler: impl Ep0Handler, debug: bool) {
+    let mut event_buf = [0u8; 128]; 
     
     loop {
-        if ep0.read(&mut event_buf).is_ok() {
-            // FunctionFS event struct starts with a 32-bit event type.
-            // Setup packets are type 2 (FUNCTIONFS_SETUP), and the UsbCtrlRequest starts at byte 4.
-            let req_ptr = &event_buf[4] as *const _ as *const UsbCtrlRequest;
-            let req = unsafe { &*req_ptr };
-
-            // Pass to the console-specific handler. If it returns false, stall the endpoint.
-            match handler.handle_control_request(req, &mut ep0) {
-                Ok(true) => {}, // Handled successfully
-                _ => {
-                    // Read 0 bytes to stall the endpoint (rejects unsupported USB requests)
-                    let mut stall_buf = [0u8; 0];
-                    let _ = ep0.read(&mut stall_buf);
+        match ep0.read(&mut event_buf) {
+            Ok(len) if len >= 12 => {
+                // Debug printing
+                let event_type = event_buf[8];
+                
+                match event_type {
+                    0 => if debug { println!("EP0: BIND"); },
+                    1 => if debug { println!("EP0: UNBIND"); },
+                    2 => if debug { println!("EP0: ENABLE"); },
+                    3 => if debug { println!("EP0: DISABLE"); },
+                    4 => {
+                        let bm_request_type = event_buf[0];
+                        let b_request = event_buf[1];
+                        let w_value = u16::from_le_bytes([event_buf[2], event_buf[3]]);
+                        let w_length = u16::from_le_bytes([event_buf[6], event_buf[7]]);
+                        
+                        if debug {
+                            println!("EP0: SETUP (bmReqType: {:#04x}, bReq: {:#04x}, wVal: {:#06x}, wLen: {})", 
+                                bm_request_type, b_request, w_value, w_length);
+                        }
+                        
+                        handler.handle_setup(&mut ep0, bm_request_type, b_request, w_value, w_length);
+                    },
+                    _ => if debug { println!("EP0: Unknown event ({})", event_type); },
                 }
+            }
+            Ok(_) => {}, 
+            Err(e) => {
+                if debug { println!("EP0 read error: {}", e); }
+                break;
             }
         }
     }

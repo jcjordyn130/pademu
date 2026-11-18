@@ -32,8 +32,12 @@ struct Args {
     mac: String,
 
     /// Enable input logging
-    #[arg(short, long)]
+    #[arg(long)]
     log_input: bool,
+
+    // Enable EP0 logging
+    #[arg(long)]
+    log_ep0: bool,
 }
 
 fn main() -> Result<()> {
@@ -58,6 +62,16 @@ fn main() -> Result<()> {
     // Capacity 1 ensures we only ever send the freshest frame (zero latency)
     let (tx, rx) = bounded::<GamepadState>(1);
 
+    // Configure the USB gadget
+    // 1. Provision the Linux Kernel configfs BEFORE opening endpoints
+    println!("Configuring USB Gadget...");
+    
+    // Fetch the DS3 identity
+    let gadget_config = crate::outputs::ds3::get_gadget_config();
+    
+    // Pass it to the abstracted setup
+    crate::usb::gadget::setup_configfs(&args.ffs_dir, &gadget_config)?;
+
     // 1. Open EP0 (Must be mutable to write descriptors)
     let mut ep0 = OpenOptions::new()
         .read(true)
@@ -73,7 +87,7 @@ fn main() -> Result<()> {
     // 3. Start USB Control Thread (EP0)
     thread::spawn(move || {
         let handler = Ds3Ep0Handler { spoofed_mac: my_bt_mac };
-        crate::usb::ffs::run_ep0_loop(ep0, handler);
+        crate::usb::ffs::run_ep0_loop(ep0, handler, args.log_ep0);
     });
 
     // 4. Open and start EP1 Data Thread
@@ -98,6 +112,9 @@ fn main() -> Result<()> {
             }
         }
     });
+
+    // Bind the USB port
+    crate::usb::gadget::bind_udc(gadget_config.gadget_name)?;
 
     // 5. Main Input Loop (DS4)
     let mut input_driver = Ds4Driver::new(&args.input)
