@@ -16,44 +16,61 @@ impl Ds4Driver {
 impl InputDriver for Ds4Driver {
     fn read_input(&mut self, state: &mut GamepadState) -> bool {
         let mut buf = [0u8; 64];
-        if self.file.read(&mut buf).unwrap_or(0) < 10 {
+        let bytes_read = self.file.read(&mut buf).unwrap_or(0);
+
+        if bytes_read != 64 {
+            println!("DEBUG: read {bytes_read} bytes from input! expected 64");
+        }
+
+        if bytes_read < 10 {
             return false;
         }
 
-        // DS4 USB Report ID is 0x01
-        if buf[0] == 0x01 {
-            // Map sticks (0-255) to (-32768 to 32767)
-            state.left_stick_x = ((buf[1] as i32 - 128) * 256) as i16;
-            state.left_stick_y = ((buf[2] as i32 - 128) * 256) as i16;
-            state.right_stick_x = ((buf[3] as i32 - 128) * 256) as i16;
-            state.right_stick_y = ((buf[4] as i32 - 128) * 256) as i16;
+        // Determine if we are reading a USB or Bluetooth report
+        let offset = if buf[0] == 0x01 {
+            0 // USB mode
+        } else if buf[0] == 0x11 {
+            2 // Bluetooth mode shifts data right by 2 bytes
+        } else {
+            return false; // Not a standard input report
+        };
 
-            let b1 = buf[5];
-            let dpad = b1 & 0x0F;
-            state.dpad_up = matches!(dpad, 0 | 1 | 7);
-            state.dpad_right = matches!(dpad, 1 | 2 | 3);
-            state.dpad_down = matches!(dpad, 3 | 4 | 5);
-            state.dpad_left = matches!(dpad, 5 | 6 | 7);
+        // Map sticks (0-255) to (-32768 to 32767)
+        state.left_stick_x = ((buf[offset + 1] as i32 - 128) * 256) as i16;
+        state.left_stick_y = ((buf[offset + 2] as i32 - 128) * 256) as i16;
+        state.right_stick_x = ((buf[offset + 3] as i32 - 128) * 256) as i16;
+        state.right_stick_y = ((buf[offset + 4] as i32 - 128) * 256) as i16;
 
-            state.west = (b1 & 0x10) != 0;  // Square
-            state.south = (b1 & 0x20) != 0; // Cross
-            state.east = (b1 & 0x40) != 0;  // Circle
-            state.north = (b1 & 0x80) != 0; // Triangle
+        let b1 = buf[offset + 5];
+        let dpad = b1 & 0x0F;
+        
+        // 8 is the neutral state for the D-Pad
+        state.dpad_up = matches!(dpad, 0 | 1 | 7);
+        state.dpad_right = matches!(dpad, 1 | 2 | 3);
+        state.dpad_down = matches!(dpad, 3 | 4 | 5);
+        state.dpad_left = matches!(dpad, 5 | 6 | 7);
 
-            let b2 = buf[6];
-            state.l1 = (b2 & 0x01) != 0;
-            state.r1 = (b2 & 0x02) != 0;
-            state.l2 = buf[8];
-            state.r2 = buf[9];
+        state.west = (b1 & 0x10) != 0;  // Square
+        state.south = (b1 & 0x20) != 0; // Cross
+        state.east = (b1 & 0x40) != 0;  // Circle
+        state.north = (b1 & 0x80) != 0; // Triangle
 
-            state.select = (b2 & 0x10) != 0;
-            state.start = (b2 & 0x20) != 0;
-            state.l3 = (b2 & 0x40) != 0;
-            state.r3 = (b2 & 0x80) != 0;
-            state.home = (buf[7] & 0x01) != 0;
+        let b2 = buf[offset + 6];
+        state.l1 = (b2 & 0x01) != 0;
+        state.r1 = (b2 & 0x02) != 0;
+        
+        state.select = (b2 & 0x10) != 0;
+        state.start = (b2 & 0x20) != 0;
+        state.l3 = (b2 & 0x40) != 0;
+        state.r3 = (b2 & 0x80) != 0;
+        
+        // PS Button is on the next byte
+        state.home = (buf[offset + 7] & 0x01) != 0;
 
-            return true;
-        }
-        false
+        // Analog triggers
+        state.l2 = buf[offset + 8];
+        state.r2 = buf[offset + 9];
+
+        true
     }
 }
