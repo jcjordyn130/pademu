@@ -2,8 +2,22 @@ use crate::core::{GamepadState, OutputEmulator};
 use crate::usb::error::{Result, UsbError};
 use crate::usb::types::UsbCtrlRequest;
 use crate::usb::ffs::Ep0Handler;
+use crate::usb::gadget::GadgetConfig;
 use std::fs::File;
 use std::io::{Read, Write};
+
+// Returns the USB Gadget configuration for the DS3
+pub fn get_gadget_config() -> GadgetConfig {
+    GadgetConfig {
+        gadget_name: "ds3",
+        vid: "0x054c",
+        pid: "0x0268",
+        bcd_device: "0x0100",
+        bcd_usb: "0x0200",
+        manufacturer: "Sony",
+        product: "PLAYSTATION(R)3 Controller",
+    }
+}
 
 /// Returns the concatenated Interface, HID, and EP1 IN descriptors for the DS3
 pub fn get_ds3_descriptors() -> Vec<u8> {
@@ -132,5 +146,35 @@ impl Ep0Handler for Ds3Ep0Handler {
             b_request_type: req.b_request_type,
             b_request: req.b_request,
         })
+    }
+
+    fn handle_setup(&self, ep0: &mut std::fs::File, bm_req: u8, b_req: u8, w_value: u16, w_length: u16) {
+        let is_in = (bm_req & 0x80) != 0;
+        let report_type = (w_value >> 8) as u8;
+        let report_id = (w_value & 0xFF) as u8;
+
+        // Catch the PS3 sending its Bluetooth MAC Address to the controller
+        if bm_req == 0x21 && b_req == 0x09 && report_type == 0x03 && report_id == 0xF5 {
+            let mut data = vec![0u8; w_length as usize];
+            if ep0.read_exact(&mut data).is_ok() {
+                println!("Received PS3 Host BT MAC: {:02X?}", &data[2..8]);
+            }
+            return;
+        }
+
+        // Universal ACK: To prevent ep_sethalt, we MUST clear the transaction
+        if is_in {
+            // The PS3 is asking for data. Send zeros to fulfill the w_length expectation.
+            let data = vec![0u8; w_length as usize];
+            let _ = ep0.write_all(&data);
+        } else {
+            // The PS3 is sending data. Read it to clear the pipe.
+            if w_length > 0 {
+                let mut data = vec![0u8; w_length as usize];
+                let _ = ep0.read_exact(&mut data);
+            } else {
+                let _ = ep0.read(&mut [0u8; 0]); 
+            }
+        }
     }
 }
