@@ -1,10 +1,11 @@
-use crate::core::{GamepadState, OutputEmulator};
+use crate::core::{GamepadState, OutputEmulator, SystemEvent};
 use crate::usb::error::{Result, UsbError};
 use crate::usb::types::UsbCtrlRequest;
 use crate::usb::ffs::Ep0Handler;
 use crate::usb::gadget::GadgetConfig;
 use std::fs::File;
 use std::io::{Read, Write};
+use std::sync::mpsc::Sender;
 
 const DS3_CALIBRATION_DATA: [u8; 48] = [
     0xEF, 0x04, 0x00, 0x0B, 0x03, 0x01, 0xB0, 0x00, 0x00, 0x00, 0x08, 0x77,
@@ -150,16 +151,17 @@ impl OutputEmulator for Ds3Emulator {
 pub struct Ds3Ep0Handler {
     pub spoofed_mac: [u8; 6],
     pub ef_data: [u8; 64],
+    pub event_tx: Sender<SystemEvent>,
 }
 
 impl Ds3Ep0Handler {
-    pub fn new(spoofed_mac: [u8; 6]) -> Self {
+    pub fn new(spoofed_mac: [u8; 6], event_tx: Sender<SystemEvent>) -> Self {
         let mut ef_data = [0u8; 64];
         // Initialize with RosettaPad's default EF header
         ef_data[1] = 0xEF; ef_data[2] = 0x04; ef_data[4] = 0x08; 
         ef_data[6] = 0x03; ef_data[7] = 0x01; ef_data[48] = 0x05;
         
-        Self { spoofed_mac, ef_data }
+        Self { spoofed_mac, ef_data, event_tx }
     }
 }
 
@@ -223,7 +225,7 @@ impl Ep0Handler for Ds3Ep0Handler {
                     } else if b_req == 0x09 && report_id == 0xF4 && data.len() >= 4 {
                         if data[0] == 0x42 && data[1] == 0x0B {
                             println!("PS3 Command: Standby/Shutdown ({:02X?})", &data[0..4]);
-                            // TODO: Physical DS4 shutdown logic goes here
+                            let _ = self.event_tx.send(SystemEvent::Standby);
                         } else if data[0] == 0x42 && data[1] == 0x0C {
                             println!("PS3 Command: Enable Reporting ({:02X?})", &data[0..4]);
                         } else {

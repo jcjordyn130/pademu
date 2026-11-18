@@ -36,6 +36,9 @@ pub struct GamepadState {
 pub trait InputDriver {
     /// Reads from the hardware (e.g., hidraw) and updates the generic state
     fn read_input(&mut self, state: &mut GamepadState) -> bool;
+
+    fn standby(&mut self);
+    fn wakeup(&mut self);
 }
 
 pub trait OutputEmulator {
@@ -130,4 +133,10 @@ impl GamepadState {
             self.gyro_y
         );
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SystemEvent {
+    Standby,
+    Wakeup,
 }

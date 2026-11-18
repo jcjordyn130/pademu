@@ -1,20 +1,26 @@
-use std::fs::File;
+use std::thread;
+use std::{fs::File, time::Duration};
 use std::io::Read;
 use crate::core::{GamepadState, InputDriver};
 
 pub struct Ds4Driver {
     file: File,
+    pub is_standby: bool,
 }
 
 impl Ds4Driver {
     pub fn new(path: &str) -> std::io::Result<Self> {
         let file = File::open(path)?;
-        Ok(Self { file })
+        Ok(Self { file, is_standby: false})
     }
 }
 
 impl InputDriver for Ds4Driver {
     fn read_input(&mut self, state: &mut GamepadState) -> bool {
+        if self.is_standby {
+            thread::sleep(Duration::from_millis(100));
+        }
+        
         let mut buf = [0u8; 64];
         let bytes_read = self.file.read(&mut buf).unwrap_or(0);
 
@@ -100,5 +106,15 @@ impl InputDriver for Ds4Driver {
         state.battery_charging = cable_plugged && raw_capacity < 10;
         
         true
+    }
+
+    fn standby(&mut self) {
+        self.is_standby = true;
+        println!("DS4: Entered standby mode!");
+    }
+
+    fn wakeup(&mut self) {
+        self.is_standby = false;
+        println!("DS4: Exit standby mode!");
     }
 }

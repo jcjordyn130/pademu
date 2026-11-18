@@ -4,6 +4,7 @@ mod outputs;
 mod usb;
 
 use std::fs::OpenOptions;
+use std::sync::mpsc;
 use std::thread;
 use std::io::Write;
 use std::time::Instant;
@@ -12,7 +13,7 @@ use flume::bounded;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use crate::core::{GamepadState, InputDriver, OutputEmulator};
+use crate::core::{GamepadState, InputDriver, OutputEmulator, SystemEvent};
 use crate::inputs::ds4::Ds4Driver;
 use crate::outputs::ds3::{Ds3Emulator, Ds3Ep0Handler, get_ds3_descriptors};
 
@@ -73,6 +74,9 @@ fn main() -> Result<()> {
     // Pass it to the abstracted setup
     crate::usb::gadget::setup_configfs(&args.ffs_dir, &gadget_config)?;
 
+    // Bring up the channel for events
+    let (event_tx, event_rx) = mpsc::channel();
+
     // 1. Open EP0 (Must be mutable to write descriptors)
     let mut ep0 = OpenOptions::new()
         .read(true)
@@ -87,7 +91,7 @@ fn main() -> Result<()> {
 
     // 3. Start USB Control Thread (EP0)
     thread::spawn(move || {
-        let handler = Ds3Ep0Handler::new(my_bt_mac);
+        let handler = Ds3Ep0Handler::new(my_bt_mac, event_tx);
         crate::usb::ffs::run_ep0_loop(ep0, handler, args.log_ep0);
     });
 
@@ -130,10 +134,27 @@ fn main() -> Result<()> {
     println!("Listening for DS4 input...");
     
     loop {
+        if let Ok(event) = event_rx.try_recv() {
+            match event {
+                SystemEvent::Standby => {
+                    println!("Main Loop: PS3 requested standby. Slowing poll rate!");
+                    input_driver.standby();
+                },
+
+                SystemEvent::Wakeup => {
+                    println!("Main Loop: Waking up!");
+                    input_driver.wakeup();
+                }
+            }
+        }
         if input_driver.read_input(&mut state) {
             if state != last_state && args.log_input {
                 state.print_active_inputs(&mut last_state, &mut last_print_time);
                 last_state = state;
+
+                if input_driver.is_standby {
+                    input_driver.wakeup();
+                }
             }
             
             let _ = tx.try_send(state);
