@@ -1,0 +1,8 @@
+[package]
+name = "pademu"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nix = { version = "0.27", features = ["fs", "poll", "ioctl"] }
+flume = "0.11"
