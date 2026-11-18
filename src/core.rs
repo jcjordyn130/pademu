@@ -13,6 +13,20 @@ pub struct GamepadState {
     pub left_stick_x: i16, pub left_stick_y: i16,
     pub right_stick_x: i16, pub right_stick_y: i16,
 
+    // Accel/Gyro
+    // This is our common format between drivers as they can vary WIDELY in accuracy and format
+    // Standard:
+    // Accelerometer is measured in G-forces (1.0 = gravity)
+    // Gyroscope is measured in degrees per second
+    // Coordinate is right-hand rule
+    // +X = right
+    // +Y = forward (away from user) or up (along face of controller)
+    // +Z = up (out of buttons towards ceiling)
+    pub accel_x: f32,
+    pub accel_y: f32,
+    pub accel_z: f32,
+    pub gyro_y: f32,
+
     // Battery state
     pub battery_level: u8, // 0-100 percentage
     pub battery_full: bool, // plugged in and >= 100%
@@ -107,11 +121,13 @@ impl GamepadState {
         let bat_status = if self.battery_charging { "Charging" } else { "Discharging" };
 
         std::println!(
-            "Bat: {}% ({}) | Btn: {:?} | L2: {:>3} R2: {:>3} | LS: ({:>6}, {:>6}) RS: ({:>6}, {:>6})",
+            "Bat: {}% ({}) | Btn: {:?} | L2: {:>3} R2: {:>3} | LS: ({:>6}, {:>6}) RS: ({:>6}, {:>6}) | Accel: ({:>5.2}g, {:>5.2}g, {:>5.2}g) Gyro: {:>6.1}°/s",
             self.battery_level, bat_status,
             active, self.l2, self.r2,
             self.left_stick_x, self.left_stick_y,
-            self.right_stick_x, self.right_stick_y
+            self.right_stick_x, self.right_stick_y,
+            self.accel_x, self.accel_y, self.accel_z,
+            self.gyro_y
         );
     }
 }
