@@ -52,7 +52,7 @@ pub fn get_ds3_descriptors() -> Vec<u8> {
 pub struct Ds3Emulator;
 
 impl OutputEmulator for Ds3Emulator {
-    fn report_size(&self) -> usize { 49 }
+    fn report_size(&self) -> usize { 64 }
 
     fn build_report(&self, state: &GamepadState, buffer: &mut [u8]) -> usize {
         buffer.fill(0);
@@ -107,7 +107,27 @@ impl OutputEmulator for Ds3Emulator {
         buffer[45] = 0x02; buffer[46] = 0x00;
         buffer[47] = 0x02; buffer[48] = 0x00;
 
-        49
+        // Bytes 29-31: USB Connection & Battery State
+        buffer[29] = 0x02; // Status: Plugged in
+
+        buffer[30] = if state.battery_full {
+            0xEF // Fully charged
+        } else if state.battery_charging {
+            0xEE // Actively charging
+        } else {
+            match state.battery_level {
+                86..=100 => 0x05, // 3 Bars
+                61..=85  => 0x04, // 2 Bars
+                36..=60  => 0x03, // 1 Bar
+                16..=35  => 0x02, // Low / Flashing
+                6..=15   => 0x01, // Dying
+                _        => 0x00, // Shutdown
+            }
+        };
+
+        buffer[31] = 0x12; // Connection: USB
+
+        64
     }
 }
 
