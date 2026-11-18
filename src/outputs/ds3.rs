@@ -202,10 +202,18 @@ impl Ep0Handler for Ds3Ep0Handler {
                         self.ef_data[0] = 0xEF;
                         let copy_len = std::cmp::min(data.len(), 63);
                         self.ef_data[1..1+copy_len].copy_from_slice(&data[..copy_len]);
-                    }
-                    // Extract PS3 MAC
-                    else if b_req == 0x09 && report_id == 0xF5 && data.len() >= 8 {
+                    } else if b_req == 0x09 && report_id == 0xF5 && data.len() >= 8 {
+                         // Extract PS3 MAC
                         println!("PS3 Authentication: Received Host MAC {:02X?}", &data[2..8]);
+                    } else if b_req == 0x09 && report_id == 0xF4 && data.len() >= 4 {
+                        if data[0] == 0x42 && data[1] == 0x0B {
+                            println!("PS3 Command: Standby/Shutdown ({:02X?})", &data[0..4]);
+                            // TODO: Physical DS4 shutdown logic goes here
+                        } else if data[0] == 0x42 && data[1] == 0x0C {
+                            println!("PS3 Command: Enable Reporting ({:02X?})", &data[0..4]);
+                        } else {
+                            println!("PS3 Command: 0xF4 Config ({:02X?})", &data[0..4]);
+                        }
                     }
                 }
             } else {
