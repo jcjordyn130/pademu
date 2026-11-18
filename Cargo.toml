@@ -8,3 +8,4 @@ nix = { version = "0.27", features = ["fs", "poll", "ioctl"] }
 flume = "0.11"
 anyhow = "1.0"
 thiserror = "1.0"
+clap = { version = "4.4", features = ["derive"] }
