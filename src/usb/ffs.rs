@@ -13,7 +13,7 @@ use super::types::{
 pub trait Ep0Handler {
     /// Return true if the request was handled, false to stall the endpoint
     fn handle_control_request(&mut self, req: &UsbCtrlRequest, ep0: &mut File) -> Result<bool>;
-    fn handle_setup(&self, ep0: &mut std::fs::File, bm_req: u8, b_req: u8, w_value: u16, w_length: u16);
+    fn handle_setup(&mut self, ep0: &mut std::fs::File, bm_req: u8, b_req: u8, w_value: u16, w_length: u16);
 }
 
 /// Writes the raw descriptors to EP0 to trigger the kernel to create EP1

@@ -86,7 +86,7 @@ fn main() -> Result<()> {
 
     // 3. Start USB Control Thread (EP0)
     thread::spawn(move || {
-        let handler = Ds3Ep0Handler { spoofed_mac: my_bt_mac };
+        let handler = Ds3Ep0Handler::new(my_bt_mac);
         crate::usb::ffs::run_ep0_loop(ep0, handler, args.log_ep0);
     });
 

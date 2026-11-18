@@ -6,6 +6,13 @@ use crate::usb::gadget::GadgetConfig;
 use std::fs::File;
 use std::io::{Read, Write};
 
+const DS3_CALIBRATION_DATA: [u8; 48] = [
+    0xEF, 0x04, 0x00, 0x0B, 0x03, 0x01, 0xB0, 0x00, 0x00, 0x00, 0x08, 0x77,
+    0x09, 0xC4, 0x08, 0x83, 0x09, 0x93, 0x08, 0x30, 0x08, 0x83, 0x08, 0x1B,
+    0x09, 0x0D, 0x08, 0x51, 0x09, 0x95, 0x08, 0x32, 0x08, 0x7F, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+];
+
 // Returns the USB Gadget configuration for the DS3
 pub fn get_gadget_config() -> GadgetConfig {
     GadgetConfig {
@@ -107,6 +114,18 @@ impl OutputEmulator for Ds3Emulator {
 /// Handler used by the generic EP0 thread for PS3 control transfers
 pub struct Ds3Ep0Handler {
     pub spoofed_mac: [u8; 6],
+    pub ef_data: [u8; 64],
+}
+
+impl Ds3Ep0Handler {
+    pub fn new(spoofed_mac: [u8; 6]) -> Self {
+        let mut ef_data = [0u8; 64];
+        // Initialize with RosettaPad's default EF header
+        ef_data[1] = 0xEF; ef_data[2] = 0x04; ef_data[4] = 0x08; 
+        ef_data[6] = 0x03; ef_data[7] = 0x01; ef_data[48] = 0x05;
+        
+        Self { spoofed_mac, ef_data }
+    }
 }
 
 impl Ep0Handler for Ds3Ep0Handler {
@@ -148,33 +167,99 @@ impl Ep0Handler for Ds3Ep0Handler {
         })
     }
 
-    fn handle_setup(&self, ep0: &mut std::fs::File, bm_req: u8, b_req: u8, w_value: u16, w_length: u16) {
+    fn handle_setup(&mut self, ep0: &mut std::fs::File, bm_req: u8, b_req: u8, w_value: u16, w_length: u16) {
         let is_in = (bm_req & 0x80) != 0;
-        let report_type = (w_value >> 8) as u8;
         let report_id = (w_value & 0xFF) as u8;
 
-        // Catch the PS3 sending its Bluetooth MAC Address to the controller
-        if bm_req == 0x21 && b_req == 0x09 && report_type == 0x03 && report_id == 0xF5 {
-            let mut data = vec![0u8; w_length as usize];
-            if ep0.read_exact(&mut data).is_ok() {
-                println!("Received PS3 Host BT MAC: {:02X?}", &data[2..8]);
-            }
-            return;
-        }
-
-        // Universal ACK: To prevent ep_sethalt, we MUST clear the transaction
-        if is_in {
-            // The PS3 is asking for data. Send zeros to fulfill the w_length expectation.
-            let data = vec![0u8; w_length as usize];
-            let _ = ep0.write_all(&data);
-        } else {
-            // The PS3 is sending data. Read it to clear the pipe.
+        // 1. Handle Host-to-Device (SET_REPORT / OUT requests)
+        if !is_in {
             if w_length > 0 {
                 let mut data = vec![0u8; w_length as usize];
-                let _ = ep0.read_exact(&mut data);
+                if ep0.read_exact(&mut data).is_ok() {
+                    
+                    // Cache the PS3's EF challenge to echo back
+                    if b_req == 0x09 && report_id == 0xEF {
+                        self.ef_data[0] = 0xEF;
+                        let copy_len = std::cmp::min(data.len(), 63);
+                        self.ef_data[1..1+copy_len].copy_from_slice(&data[..copy_len]);
+                    }
+                    // Extract PS3 MAC
+                    else if b_req == 0x09 && report_id == 0xF5 && data.len() >= 8 {
+                        println!("PS3 Authentication: Received Host MAC {:02X?}", &data[2..8]);
+                    }
+                }
             } else {
                 let _ = ep0.read(&mut [0u8; 0]); 
             }
+            
+            // CRITICAL FFS FIX: Write 0 bytes to ACK the status stage of an OUT transfer
+            let _ = ep0.write(&[]);
+            return;
         }
+
+        // 2. Handle Device-to-Host (GET_REPORT / IN requests)
+        let mut data = vec![0u8; w_length as usize];
+        if bm_req == 0xa1 && b_req == 0x01 && w_length > 0 {
+            let copy_len = std::cmp::min(w_length as usize, 64);
+            
+            // GRR Sony violating the USB HID protocol slafdghdslkfghdslk
+            match report_id {
+                0xEF => {
+                    data[..copy_len].copy_from_slice(&self.ef_data[..copy_len]);
+                },
+                0xF2 => {
+                    let f2 = [
+                        0xF2, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00,
+                        0x00, 0x00, 0x00, 0x03, 0x50, 0x81, 0xD8, 0x01
+                    ];
+                    let len = std::cmp::min(copy_len, f2.len());
+                    data[..len].copy_from_slice(&f2[..len]);
+                    if w_length >= 10 {
+                        data[4..10].copy_from_slice(&self.spoofed_mac);
+                    }
+                },
+                0xF5 => {
+                    let f5 = [
+                        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                        0xAE, 0x60, 0x00, 0x03, 0x50, 0x81, 0xD8, 0x01
+                    ];
+                    let len = std::cmp::min(copy_len, f5.len());
+                    data[..len].copy_from_slice(&f5[..len]);
+                    if w_length >= 8 {
+                        // RosettaPad injects the Pi's MAC here, not the PS3's
+                        data[2..8].copy_from_slice(&self.spoofed_mac);
+                    }
+                },
+                0xF7 => {
+                    let f7 = [
+                        0x02, 0x01, 0xF8, 0x02, 0x07, 0x02, 0xEF, 0xFF,
+                        0x14, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+                    ];
+                    let len = std::cmp::min(copy_len, f7.len());
+                    data[..len].copy_from_slice(&f7[..len]);
+                },
+                0xF8 => {
+                    let f8 = [
+                        0x00, 0x02, 0x00, 0x00, 0x08, 0x00, 0x03, 0x01,
+                        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+                    ];
+                    let len = std::cmp::min(copy_len, f8.len());
+                    data[..len].copy_from_slice(&f8[..len]);
+                },
+                0x01 => {
+                    let r01 = [
+                        0x00, 0x01, 0x04, 0x00, 0x08, 0x0C, 0x01, 0x02,
+                        0x18, 0x18, 0x18, 0x18, 0x09, 0x0A, 0x10, 0x11
+                    ];
+                    let len = std::cmp::min(copy_len, r01.len());
+                    data[..len].copy_from_slice(&r01[..len]);
+                },
+                _ => {
+                    // Standard HID compliance for anything else
+                    data[0] = report_id; 
+                }
+            }
+        }
+        let _ = ep0.write_all(&data);
     }
 }
