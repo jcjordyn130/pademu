@@ -71,6 +71,20 @@ impl InputDriver for Ds4Driver {
         state.l2 = buf[offset + 8];
         state.r2 = buf[offset + 9];
 
+        // Accel/gyro
+        // Offset 13-18 is Gyro (Pitch, Yaw, Roll)
+        // Offset 19-24 is Accel (X, Y, Z)
+        
+        let raw_gyro_y = i16::from_le_bytes([buf[offset + 15], buf[offset + 16]]);
+        let raw_accel_x = i16::from_le_bytes([buf[offset + 19], buf[offset + 20]]);
+        let raw_accel_y = i16::from_le_bytes([buf[offset + 21], buf[offset + 22]]);
+        let raw_accel_z = i16::from_le_bytes([buf[offset + 23], buf[offset + 24]]);
+
+        state.gyro_y = raw_gyro_y as f32 / 1024.0;
+        state.accel_x = raw_accel_x as f32 / 8192.0;
+        state.accel_y = raw_accel_y as f32 / 8192.0; 
+        state.accel_z = raw_accel_z as f32 / 8192.0; 
+
         // Battery byte is at index 30 for USB, index 32 for BT
         let battery_byte = buf[offset + 30];
     
