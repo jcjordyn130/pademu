@@ -101,11 +101,26 @@ impl OutputEmulator for Ds3Emulator {
         buffer[24] = if state.south { 255 } else { 0 };
         buffer[25] = if state.west { 255 } else { 0 };
 
-        // Neutral Gyro/Accel
-        buffer[41] = 0x02; buffer[42] = 0x00;
-        buffer[43] = 0x02; buffer[44] = 0x00;
-        buffer[45] = 0x02; buffer[46] = 0x00;
-        buffer[47] = 0x02; buffer[48] = 0x00;
+        // Accel/gyro
+        // The DS3 expects ~72 ticks per G for accel, and ~8 ticks per deg/s for gyro.
+        // Apply the DS3's specific axis inversions here.
+        let ds3_accel_x = (509.0 + (state.accel_x * 72.0)).clamp(0.0, 1023.0) as u16;
+        let ds3_accel_y = (512.0 - (state.accel_y * 72.0)).clamp(0.0, 1023.0) as u16; 
+        let ds3_accel_z = (489.0 - (state.accel_z * 72.0)).clamp(0.0, 1023.0) as u16; 
+        let ds3_gyro_z  = (512.0 + (state.gyro_y * 8.0)).clamp(0.0, 1023.0) as u16; 
+
+        // Pack into buffer as Big-Endian (10-bit values masked into 16-bits)
+        buffer[41] = (ds3_accel_x >> 8) as u8 & 0x03;
+        buffer[42] = (ds3_accel_x & 0xFF) as u8;
+
+        buffer[43] = (ds3_accel_y >> 8) as u8 & 0x03;
+        buffer[44] = (ds3_accel_y & 0xFF) as u8;
+
+        buffer[45] = (ds3_accel_z >> 8) as u8 & 0x03;
+        buffer[46] = (ds3_accel_z & 0xFF) as u8;
+
+        buffer[47] = (ds3_gyro_z >> 8) as u8 & 0x03;
+        buffer[48] = (ds3_gyro_z & 0xFF) as u8;
 
         // Bytes 29-31: USB Connection & Battery State
         buffer[29] = 0x02; // Status: Plugged in
@@ -214,7 +229,20 @@ impl Ep0Handler for Ds3Ep0Handler {
                         } else {
                             println!("PS3 Command: 0xF4 Config ({:02X?})", &data[0..4]);
                         }
-                    }
+                    } else if b_req == 0x09 && report_id == 0x01 && data.len() >= 6 {
+                        // Parse 0x01 Rumble & LED Command
+                        let weak_motor = data[3];   // Right motor (Binary: 0 or 1)
+                        let strong_motor = data[5]; // Left motor (Variable: 0-255)
+                        
+                        // LEDs are assigned in byte 10 if the packet is long enough
+                        let ds3_leds = if data.len() >= 11 { data[10] } else { 0 };
+
+                        println!("PS3 Command: Rumble L:{} R:{} | LEDs: 0x{:02X}", 
+                                strong_motor, weak_motor, ds3_leds);
+
+                        // TODO: Send these values to your Ds4Driver to build and write
+                        // a hidraw output report to the physical controller.
+                   }
                 }
             } else {
                 let _ = ep0.read(&mut [0u8; 0]); 
