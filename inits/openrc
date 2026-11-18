@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+description="Pademu - Controller (Pad) Emulator"
+name="pademu"
+command="/usr/local/bin/pademu"
+command_user="root"
+command_background="yes"
+pidfile="/run/pademu.pid"
+output_log="/var/log/pademu.log"
+error_log="/var/log/pademu.log"
+
+
+depend() {
+    need localmount dbus
+    after bluetooth
+}
+
+start_pre() {
+    ebegin "Loading kernel modules for USB gadget"
+    /sbin/modprobe libcomposite >/dev/null 2>&1 || true
+    /sbin/modprobe usb_f_fs >/dev/null 2>&1 || true
+    /bin/sh -c '/usr/sbin/rfkill unblock bluetooth 2>/dev/null || true' >/dev/null 2>&1 || true
+    eend $?
+}
