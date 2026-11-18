@@ -1,0 +1,20 @@
+#!/bin/sh
+
+# Define your Pi's IP or hostname
+PI_HOST="root@192.168.0.175"
+
+# Go back a dir
+pushd ..
+
+# Compile
+cargo zigbuild --target aarch64-unknown-linux-musl
+if [ "$?" != "0" ]; then
+    echo "cargo failure; will not deploy!"
+    exit 1
+fi
+
+# Copy the static binary to the Pi
+cat target/aarch64-unknown-linux-musl/debug/pademu | ssh $PI_HOST "cat > /usr/local/bin/pademu && chmod +x /usr/local/bin/pademu"
+
+# Go back
+popd
