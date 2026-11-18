@@ -71,6 +71,20 @@ impl InputDriver for Ds4Driver {
         state.l2 = buf[offset + 8];
         state.r2 = buf[offset + 9];
 
+        // Battery byte is at index 30 for USB, index 32 for BT
+        let battery_byte = buf[offset + 30];
+    
+        // Lower 4 bits hold the charge capacity (0 to 10)
+        let raw_capacity = battery_byte & 0x0F;
+    
+        // Bit 4 (0x10) is the USB cable detection flag
+        let cable_plugged = (battery_byte & 0x10) != 0;
+
+        // Scale the 0-10 capacity up to 0-100% for the emulator state
+        state.battery_level = (raw_capacity as f32 / 10.0 * 100.0).min(100.0) as u8;
+        state.battery_full = cable_plugged && raw_capacity >= 10;
+        state.battery_charging = cable_plugged && raw_capacity < 10;
+        
         true
     }
 }

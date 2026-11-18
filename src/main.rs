@@ -6,6 +6,7 @@ mod usb;
 use std::fs::OpenOptions;
 use std::thread;
 use std::io::Write;
+use std::time::Instant;
 
 use flume::bounded;
 use anyhow::{Context, Result};
@@ -124,13 +125,14 @@ fn main() -> Result<()> {
     // Aids in debugging
     let mut state = GamepadState::default();
     let mut last_state = state;
+    let mut last_print_time = Instant::now();
 
     println!("Listening for DS4 input...");
     
     loop {
         if input_driver.read_input(&mut state) {
             if state != last_state && args.log_input {
-                state.print_active_inputs();
+                state.print_active_inputs(&mut last_state, &mut last_print_time);
                 last_state = state;
             }
             
