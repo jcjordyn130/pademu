@@ -11,7 +11,7 @@ const DS3_CALIBRATION_DATA: [u8; 48] = [
     0xEF, 0x04, 0x00, 0x0B, 0x03, 0x01, 0xB0, 0x00, 0x00, 0x00, 0x08, 0x77,
     0x09, 0xC4, 0x08, 0x83, 0x09, 0x93, 0x08, 0x30, 0x08, 0x83, 0x08, 0x1B,
     0x09, 0x0D, 0x08, 0x51, 0x09, 0x95, 0x08, 0x32, 0x08, 0x7F, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
 // Returns the USB Gadget configuration for the DS3
@@ -163,6 +163,126 @@ impl Ds3Ep0Handler {
         
         Self { spoofed_mac, ef_data, event_tx }
     }
+
+    /// Populates IN reports (Device-to-Host). Returns the number of bytes written.
+    /// Le sigh, of course Sony violates the USB HID standard.
+    fn handle_in_report(&self, report_id: u8, data: &mut [u8]) -> usize {
+        match report_id {
+            0xEF => {
+                // Crypto / Authentication Challenge
+                // The PS3 sends a cryptographic challenge block via an OUT report, and 
+                // expects the controller to echo back a modified response here. We just 
+                // echo back the cached data, which is enough to satisfy the kernel.
+                data.copy_from_slice(&self.ef_data);
+                64
+            },
+            0xF2 => {
+                // Device MAC Address Report
+                // The PS3 asks the controller for its Bluetooth MAC address so it can 
+                // pair and trust it for wireless play. We inject our spoofed MAC at offset 4.
+                let mut f2 = [
+                    0xF2, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x03, 0x50, 0x81, 0xD8, 0x01
+                ];
+                f2[4..10].copy_from_slice(&self.spoofed_mac);
+                data[..16].copy_from_slice(&f2);
+                16
+            },
+            0xF5 => {
+                // Host MAC Address Acknowledgment
+                // After the PS3 sends its own MAC address to the controller, it asks 
+                // for this report to confirm the controller received it. We inject 
+                // our spoofed MAC at offset 2 here as the controller's signature.
+                let mut f5 = [
+                    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0xAE, 0x60, 0x00, 0x03, 0x50, 0x81, 0xD8, 0x01
+                ];
+                f5[2..8].copy_from_slice(&self.spoofed_mac);
+                data[..16].copy_from_slice(&f5);
+                16
+            },
+            0xF7 => {
+                // Initial Calibration / Power Status
+                // Sent during the handshake. Harcoded to a standard plugged-in state 
+                // so the PS3 doesn't think the controller is immediately dying.
+                data[..16].copy_from_slice(&[
+                    0x02, 0x01, 0xF8, 0x02, 0x07, 0x02, 0xEF, 0xFF,
+                    0x14, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+                ]);
+                16
+            },
+            0xF8 => {
+                // LED / Rumble Operational Configuration
+                // Another handshake report. Hardcoded to a neutral resting state to 
+                // clear any persistent LEDs or rumble states on boot.
+                data[..16].copy_from_slice(&[
+                    0x00, 0x02, 0x00, 0x00, 0x08, 0x00, 0x03, 0x01,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+                ]);
+                16
+            },
+            0x01 => {
+                // Initial Input Report (EP0)
+                // The PS3 asks for the current state of buttons/sticks directly over the 
+                // control endpoint (EP0) before the fast EP1 data polling stream kicks in. 
+                // This is a hardcoded neutral state (no buttons pressed, sticks centered).
+                data[..16].copy_from_slice(&[
+                    0x00, 0x01, 0x04, 0x00, 0x08, 0x0C, 0x01, 0x02,
+                    0x18, 0x18, 0x18, 0x18, 0x09, 0x0A, 0x10, 0x11
+                ]);
+                16
+            },
+            _ => {
+                // Standard HID compliance: if an unknown report is requested, 
+                // the first byte must always be the report ID itself.
+                data[0] = report_id; 
+                1
+            }
+        }
+    }
+
+    /// Parses OUT reports (Host-to-Device). Returns nothing, but may fire SystemEvents.
+    fn handle_out_report(&mut self, b_req: u8, report_id: u8, data: &[u8]) {
+        if b_req != 0x09 { return; } // We only care about SET_REPORT (0x09)
+
+        match report_id {
+            0xEF => {
+                // Cache the PS3's EF challenge
+                self.ef_data[0] = 0xEF;
+                let copy_len = std::cmp::min(data.len(), 63);
+                self.ef_data[1..1+copy_len].copy_from_slice(&data[..copy_len]);
+            },
+            0xF5 if data.len() >= 8 => {
+                println!("PS3 Authentication: Received Host MAC {:02X?}", &data[2..8]);
+            },
+            0xF4 if data.len() >= 4 => {
+                if data[0] == 0x42 && data[1] == 0x0B {
+                    println!("PS3 Command: Standby/Shutdown");
+                    let _ = self.event_tx.send(SystemEvent::Standby);
+                } else if data[0] == 0x42 && data[1] == 0x0C {
+                    println!("PS3 Command: Enable Reporting");
+                }
+            },
+            0x01 if data.len() >= 6 => {
+                let weak_motor = data[3];   
+                let strong_motor = data[5]; 
+                let ds3_leds = if data.len() >= 11 { data[10] } else { 0 };
+
+                if strong_motor > 0 || weak_motor > 0 {
+                    println!("PS3 Rumble -> L:{} R:{} | LEDs: 0x{:02X}", strong_motor, weak_motor, ds3_leds);
+                }
+
+                // Send the payload to the main thread over the event bus
+                //let _ = self.event_tx.send(SystemEvent::Rumble { 
+                //    strong: strong_motor, 
+                //    weak: weak_motor, 
+                //   leds: ds3_leds 
+                //});
+            },
+            _ => {} // Ignore unknown OUT reports
+        }
+    }
+
 }
 
 impl Ep0Handler for Ds3Ep0Handler {
@@ -203,121 +323,39 @@ impl Ep0Handler for Ds3Ep0Handler {
             b_request: req.b_request,
         })
     }
-
+    
     fn handle_setup(&mut self, ep0: &mut std::fs::File, bm_req: u8, b_req: u8, w_value: u16, w_length: u16) {
         let is_in = (bm_req & 0x80) != 0;
         let report_id = (w_value & 0xFF) as u8;
 
-        // 1. Handle Host-to-Device (SET_REPORT / OUT requests)
         if !is_in {
+            // OUT Transfer (Host -> Device)
             if w_length > 0 {
                 let mut data = vec![0u8; w_length as usize];
                 if ep0.read_exact(&mut data).is_ok() {
-                    
-                    // Cache the PS3's EF challenge to echo back
-                    if b_req == 0x09 && report_id == 0xEF {
-                        self.ef_data[0] = 0xEF;
-                        let copy_len = std::cmp::min(data.len(), 63);
-                        self.ef_data[1..1+copy_len].copy_from_slice(&data[..copy_len]);
-                    } else if b_req == 0x09 && report_id == 0xF5 && data.len() >= 8 {
-                         // Extract PS3 MAC
-                        println!("PS3 Authentication: Received Host MAC {:02X?}", &data[2..8]);
-                    } else if b_req == 0x09 && report_id == 0xF4 && data.len() >= 4 {
-                        if data[0] == 0x42 && data[1] == 0x0B {
-                            println!("PS3 Command: Standby/Shutdown ({:02X?})", &data[0..4]);
-                            let _ = self.event_tx.send(SystemEvent::Standby);
-                        } else if data[0] == 0x42 && data[1] == 0x0C {
-                            println!("PS3 Command: Enable Reporting ({:02X?})", &data[0..4]);
-                        } else {
-                            println!("PS3 Command: 0xF4 Config ({:02X?})", &data[0..4]);
-                        }
-                    } else if b_req == 0x09 && report_id == 0x01 && data.len() >= 6 {
-                        // Parse 0x01 Rumble & LED Command
-                        let weak_motor = data[3];   // Right motor (Binary: 0 or 1)
-                        let strong_motor = data[5]; // Left motor (Variable: 0-255)
-                        
-                        // LEDs are assigned in byte 10 if the packet is long enough
-                        let ds3_leds = if data.len() >= 11 { data[10] } else { 0 };
-
-                        println!("PS3 Command: Rumble L:{} R:{} | LEDs: 0x{:02X}", 
-                                strong_motor, weak_motor, ds3_leds);
-
-                        // TODO: Send these values to your Ds4Driver to build and write
-                        // a hidraw output report to the physical controller.
-                   }
+                    self.handle_out_report(b_req, report_id, &data);
                 }
             } else {
                 let _ = ep0.read(&mut [0u8; 0]); 
             }
             
-            // CRITICAL FFS FIX: Write 0 bytes to ACK the status stage of an OUT transfer
+            // FFS requires acknowledging the status stage with a zero-byte write
             let _ = ep0.write(&[]);
-            return;
-        }
-
-        // 2. Handle Device-to-Host (GET_REPORT / IN requests)
-        let mut data = vec![0u8; w_length as usize];
-        if bm_req == 0xa1 && b_req == 0x01 && w_length > 0 {
-            let copy_len = std::cmp::min(w_length as usize, 64);
             
-            // GRR Sony violating the USB HID protocol slafdghdslkfghdslk
-            match report_id {
-                0xEF => {
-                    data[..copy_len].copy_from_slice(&self.ef_data[..copy_len]);
-                },
-                0xF2 => {
-                    let f2 = [
-                        0xF2, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00,
-                        0x00, 0x00, 0x00, 0x03, 0x50, 0x81, 0xD8, 0x01
-                    ];
-                    let len = std::cmp::min(copy_len, f2.len());
-                    data[..len].copy_from_slice(&f2[..len]);
-                    if w_length >= 10 {
-                        data[4..10].copy_from_slice(&self.spoofed_mac);
-                    }
-                },
-                0xF5 => {
-                    let f5 = [
-                        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                        0xAE, 0x60, 0x00, 0x03, 0x50, 0x81, 0xD8, 0x01
-                    ];
-                    let len = std::cmp::min(copy_len, f5.len());
-                    data[..len].copy_from_slice(&f5[..len]);
-                    if w_length >= 8 {
-                        // RosettaPad injects the Pi's MAC here, not the PS3's
-                        data[2..8].copy_from_slice(&self.spoofed_mac);
-                    }
-                },
-                0xF7 => {
-                    let f7 = [
-                        0x02, 0x01, 0xF8, 0x02, 0x07, 0x02, 0xEF, 0xFF,
-                        0x14, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-                    ];
-                    let len = std::cmp::min(copy_len, f7.len());
-                    data[..len].copy_from_slice(&f7[..len]);
-                },
-                0xF8 => {
-                    let f8 = [
-                        0x00, 0x02, 0x00, 0x00, 0x08, 0x00, 0x03, 0x01,
-                        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-                    ];
-                    let len = std::cmp::min(copy_len, f8.len());
-                    data[..len].copy_from_slice(&f8[..len]);
-                },
-                0x01 => {
-                    let r01 = [
-                        0x00, 0x01, 0x04, 0x00, 0x08, 0x0C, 0x01, 0x02,
-                        0x18, 0x18, 0x18, 0x18, 0x09, 0x0A, 0x10, 0x11
-                    ];
-                    let len = std::cmp::min(copy_len, r01.len());
-                    data[..len].copy_from_slice(&r01[..len]);
-                },
-                _ => {
-                    // Standard HID compliance for anything else
-                    data[0] = report_id; 
-                }
+        } else {
+            // IN Transfer (Device -> Host)
+            let mut data = vec![0u8; w_length as usize];
+            
+            if bm_req == 0xA1 && b_req == 0x01 && w_length > 0 {
+                // Buffer sizing ensures we don't panic if w_length is weirdly short
+                let mut temp_buf = [0u8; 64];
+                let bytes_written = self.handle_in_report(report_id, &mut temp_buf);
+                
+                let copy_len = std::cmp::min(w_length as usize, bytes_written);
+                data[..copy_len].copy_from_slice(&temp_buf[..copy_len]);
             }
+            
+            let _ = ep0.write_all(&data);
         }
-        let _ = ep0.write_all(&data);
     }
 }
