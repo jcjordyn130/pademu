@@ -2,6 +2,7 @@
 
 # Define your Pi's IP or hostname
 PI_HOST="root@192.168.0.175"
+TARGET="/tmp"
 
 # Go back a dir
 pushd ..
@@ -14,7 +15,7 @@ if [ "$?" != "0" ]; then
 fi
 
 # Copy the static binary to the Pi
-cat target/aarch64-unknown-linux-musl/debug/pademu | ssh $PI_HOST "cat > /usr/local/bin/pademu && chmod +x /usr/local/bin/pademu"
+cat target/aarch64-unknown-linux-musl/debug/pademu | ssh $PI_HOST "cat > $TARGET && chmod +x $TARGET"
 
 # Go back
 popd
