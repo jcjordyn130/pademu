@@ -3,6 +3,7 @@ use std::fs::File;
 use std::mem;
 
 // Pull in the kernel structs from the adjacent types.rs file
+use super::error::{Result, UsbError};
 use super::types::{
     FfsDescHeaderV2, FfsStrings, UsbCtrlRequest, 
     FUNCTIONFS_DESCRIPTORS_MAGIC_V2, FUNCTIONFS_STRINGS_MAGIC
@@ -11,19 +12,25 @@ use super::types::{
 /// Trait for handling device-specific control transfers (e.g., PS3 0xF2/0xF5)
 pub trait Ep0Handler {
     /// Return true if the request was handled, false to stall the endpoint
-    fn handle_control_request(&mut self, req: &UsbCtrlRequest, ep0: &mut File) -> std::io::Result<bool>;
+    fn handle_control_request(&mut self, req: &UsbCtrlRequest, ep0: &mut File) -> Result<bool>;
 }
 
 /// Writes the raw descriptors to EP0 to trigger the kernel to create EP1
-pub fn write_descriptors(ep0: &mut File, descriptors: &[u8]) -> std::io::Result<()> {
+pub fn write_descriptors(ep0: &mut File, descriptors: &[u8], descriptor_count: u32) -> Result<()> {
+    // no empty descriptors
+    if descriptors.is_empty() {
+        return Err(UsbError::InvalidDescriptor);
+    }
+
+    // Bring up FFS request
     let total_len = mem::size_of::<FfsDescHeaderV2>() as u32 + (descriptors.len() as u32 * 2);
 
     let header = FfsDescHeaderV2 {
         magic: FUNCTIONFS_DESCRIPTORS_MAGIC_V2.to_le(),
         length: total_len.to_le(),
-        flags: 3.to_le(), // FS + HS
-        fs_count: 3.to_le(), // Interface, HID, EP1 IN
-        hs_count: 3.to_le(),
+        flags: 3u32.to_le(), // FS + HS
+        fs_count: descriptor_count.to_le(),
+        hs_count: descriptor_count.to_le(),
     };
 
     let mut blob = Vec::new();
@@ -45,6 +52,7 @@ pub fn write_descriptors(ep0: &mut File, descriptors: &[u8]) -> std::io::Result<
         lang_count: 0,
     };
     
+    // Write the actual EP0 payload
     ep0.write_all(unsafe {
         std::slice::from_raw_parts(&strings as *const _ as *const u8, mem::size_of::<FfsStrings>())
     })?;
